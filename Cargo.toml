@@ -8,3 +8,6 @@ edition = "2018"
 chrono = "0.4.6"
 hyper = "0.12.14"
 futures = "0.1.25"
+
+[dependencies.curly]
+path = "../curly"

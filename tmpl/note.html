@@ -1,0 +1,32 @@
+{#top.html#}
+{:title:}{title}{:} <!-- stupid -->
+{:style:}
+    textarea#note-text {!
+        height: 30em;
+        width: 100%;
+    }
+{:}
+{:body:}
+    <nav>
+        <p>
+            <form autocomplete=off method=get>
+                <input type=text name=date value={{date}}>
+                <input type=submit value=Go>
+            </form>
+        </p>
+        <p>
+            <a id=date-prev href="note?{date-prev}">&lt;&lt;</a>
+            |
+            <a id=date-today href="note?{date-today}">today</a>
+            |
+            <a id=date-next href="note?{date-next}">&gt;&gt;</a>
+        </p>
+    </nav>
+    <main>
+        <form autocomplete=off action="" method=post>
+            <textarea id=note-text>{{text}}</textarea>
+            <input type=submit>
+        </form>
+    </main>
+{:}
+{#}

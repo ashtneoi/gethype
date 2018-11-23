@@ -1,18 +1,37 @@
 extern crate chrono;
+extern crate curly;
 extern crate futures;
 extern crate hyper;
 
 use chrono::Local;
+use curly::render_file_to_string;
 use futures::Future;
-use hyper::{Body, Method, Request, Response, Server};
+use hyper::{Body, Method, Request, Response, Server, StatusCode};
 use hyper::service::service_fn_ok;
+use std::collections::HashMap;
+use std::path::Path;
 
 fn date(_req: &Request<Body>) -> Response<Body> {
     let today = Local::today()
         .naive_local()
         .format("%Y-%m-%d"); // FIXME
     let today_fmt = format!("{}", today);
-    Response::new(Body::from(today_fmt))
+    let mut ctx = HashMap::new();
+    ctx.insert("date".to_string(), today_fmt);
+    match render_file_to_string(
+        Path::new("tmpl/date.html"),
+        &ctx,
+    ) {
+        Ok(b) => {
+            return Response::new(Body::from(b));
+        },
+        Err(e) => {
+            eprintln!("error: {}", e);
+            return Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(Body::empty()).unwrap();
+        },
+    };
 }
 
 fn route(req: Request<Body>) -> Response<Body> {
