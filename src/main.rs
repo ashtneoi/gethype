@@ -11,33 +11,78 @@ use hyper::service::service_fn_ok;
 use std::collections::HashMap;
 use std::path::Path;
 
-fn date(_req: &Request<Body>) -> Response<Body> {
-    let today = Local::today()
-        .naive_local()
-        .format("%Y-%m-%d"); // FIXME
-    let today_fmt = format!("{}", today);
+fn build_simple_error(status_code: u16) -> Response<Body> {
     let mut ctx = HashMap::new();
-    ctx.insert("date".to_string(), today_fmt);
+    ctx.insert("title".to_string(), format!("Error ({})", status_code));
+    ctx.insert("style".to_string(), "".to_string());
+    ctx.insert(
+        "body".to_string(),
+        format!("<h1>Error: HTTP {}</h1>", status_code),
+    );
     match render_file_to_string(
-        Path::new("tmpl/date.html"),
+        Path::new("tmpl/top.html"),
         &ctx,
     ) {
         Ok(b) => {
-            return Response::new(Body::from(b));
+            Response::builder()
+                .status(StatusCode::from_u16(status_code).unwrap())
+                .body(Body::from(b)).unwrap()
         },
         Err(e) => {
             eprintln!("error: {}", e);
-            return Response::builder()
+            let fallback_body = "\
+                <!DOCTYPE html><html lang=en>\
+                <head>\
+                <meta charset=utf-8>\
+                <title>Server error while generating error page</title>\
+                </head><body>\
+                <h1>Server error while generating error page</h1>\
+                </body></html>".to_string();
+            Response::builder()
                 .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .body(Body::empty()).unwrap();
+                .body(Body::from(fallback_body)).unwrap()
         },
-    };
+    }
+}
+
+fn today() -> String {
+    let today = Local::today()
+        .naive_local()
+        .format("%Y-%m-%d"); // FIXME
+    format!("{}", today)
+}
+
+fn note(req: &Request<Body>) -> Response<Body> {
+    match req.method() {
+        &Method::GET => {
+            let mut ctx = HashMap::new();
+            ctx.insert("today".to_string(), today());
+            match render_file_to_string(
+                Path::new("tmpl/note.html"),
+                &ctx,
+            ) {
+                Ok(b) => {
+                    Response::new(Body::from(b))
+                },
+                Err(e) => {
+                    eprintln!("error: {}", e);
+                    build_simple_error(500)
+                },
+            }
+        },
+        &Method::POST => {
+            build_simple_error(500)
+        },
+        _ => build_simple_error(500),
+    }
 }
 
 fn route(req: Request<Body>) -> Response<Body> {
     match (req.method(), req.uri().path()) {
-        (&Method::GET, "/date") => date(&req),
-        _ => Response::new(Body::from("what?")),
+        (_, "/note") => note(&req),
+        _ => Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body(Body::from("404")).unwrap(),
     }
 }
 
