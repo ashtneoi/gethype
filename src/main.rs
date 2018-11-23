@@ -2,12 +2,14 @@ extern crate chrono;
 extern crate curly;
 extern crate futures;
 extern crate hyper;
+extern crate regex;
 
 use chrono::Local;
 use curly::render_file_to_string;
 use futures::Future;
 use hyper::{Body, Method, Request, Response, Server, StatusCode};
 use hyper::service::service_fn_ok;
+use regex::{Regex, Captures};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -52,7 +54,7 @@ fn today() -> String {
     format!("{}", today)
 }
 
-fn note(req: &Request<Body>) -> Response<Body> {
+fn note(req: &Request<Body>, cap: &Captures) -> Response<Body> {
     match req.method() {
         &Method::GET => {
             let mut ctx = HashMap::new();
@@ -77,18 +79,35 @@ fn note(req: &Request<Body>) -> Response<Body> {
     }
 }
 
-fn route(req: Request<Body>) -> Response<Body> {
-    match (req.method(), req.uri().path()) {
-        (_, "/note") => note(&req),
-        _ => Response::builder()
-            .status(StatusCode::NOT_FOUND)
-            .body(Body::from("404")).unwrap(),
+struct UrlRouter(Vec<(Regex, fn(&Request<Body>, &Captures) -> Response<Body>)>);
+
+impl UrlRouter {
+    fn new(mut routes: Vec<(&str, fn(&Request<Body>, &Captures) -> Response<Body>)>)
+        -> Self
+    {
+        UrlRouter(routes.drain(..).map(
+            |(s, f)| (Regex::new(s).unwrap(), f)
+        ).collect())
+    }
+
+    fn route(&self, req: Request<Body>) -> Response<Body> {
+        for (pat, f) in &self.0 {
+            match pat.captures(req.uri().path()) {
+                Some(c) => return f(&req, &c),
+                None => (),
+            }
+        }
+        build_simple_error(404)
     }
 }
 
+
 fn main() {
     let bind_addr = ([127, 0, 0, 1], 8000).into();
-    let svc = || { service_fn_ok(route) };
+    let router = UrlRouter::new(vec![
+        ("/note/([0-9]{4}-[0-9]{2}-[0-9]{2})", note),
+    ]);
+    let svc = || { service_fn_ok(|req| router.route(req)) };
     let server = Server::bind(&bind_addr)
         .serve(svc)
         .map_err(|e| { eprintln!("error: {}", e) });
