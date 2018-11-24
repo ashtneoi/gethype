@@ -4,13 +4,15 @@ extern crate futures;
 extern crate hyper;
 extern crate regex;
 
-use chrono::Local;
+use chrono::{Local, NaiveDate};
 use curly::render_file_to_string;
 use futures::Future;
 use hyper::{Body, Method, Request, Response, Server, StatusCode};
 use hyper::service::service_fn_ok;
 use regex::{Regex, Captures};
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::{self, prelude::*};
 use std::path::Path;
 
 fn build_simple_error(status_code: u16) -> Response<Body> {
@@ -31,7 +33,7 @@ fn build_simple_error(status_code: u16) -> Response<Body> {
                 .body(Body::from(b)).unwrap()
         },
         Err(e) => {
-            eprintln!("error: {}", e);
+            eprintln!("server error: {}", e);
             let fallback_body = "\
                 <!DOCTYPE html><html lang=en>\
                 <head>\
@@ -54,11 +56,65 @@ fn today() -> String {
     format!("{}", today)
 }
 
+static YMD_FORMAT: &str = "%Y-%m-%d";
+
 fn note(req: &Request<Body>, cap: &Captures) -> Response<Body> {
     match req.method() {
         &Method::GET => {
             let mut ctx = HashMap::new();
+            let date = match NaiveDate::parse_from_str(
+                cap.get(1).unwrap().as_str(),
+                "%Y-%m-%d",
+            ) {
+                Ok(d) => d,
+                Err(e) => {
+                    eprintln!("client error: {}", e);
+                    return build_simple_error(400)
+                },
+            };
             ctx.insert("today".to_string(), today());
+            ctx.insert(
+                "date".to_string(),
+                format!("{}", date.format(YMD_FORMAT)),
+            );
+            ctx.insert(
+                "prev".to_string(),
+                format!("{}", date.pred().format(YMD_FORMAT)),
+            );
+            ctx.insert(
+                "next".to_string(),
+                format!("{}", date.succ().format(YMD_FORMAT)),
+            );
+            let note_name = format!("data/notes/{}", date.format(YMD_FORMAT));
+            let text = match File::open(&note_name) {
+                Ok(mut f) => {
+                    let mut s = String::new();
+                    if let Err(e) = f.read_to_string(&mut s) {
+                        eprintln!(
+                            "server error: can't read note file '{}' ({})",
+                            note_name,
+                            e,
+                        );
+                        return build_simple_error(500);
+                    }
+                    assert!(s.ends_with('\n'));
+                    s.pop();
+                    s
+                },
+                Err(e) => {
+                    if e.kind() == io::ErrorKind::NotFound {
+                        "".to_string()
+                    } else {
+                        eprintln!(
+                            "server error: can't read note file '{}' ({})",
+                            note_name,
+                            e,
+                        );
+                        return build_simple_error(500);
+                    }
+                },
+            };
+            ctx.insert("text".to_string(), text);
             match render_file_to_string(
                 Path::new("tmpl/note.html"),
                 &ctx,
@@ -67,7 +123,7 @@ fn note(req: &Request<Body>, cap: &Captures) -> Response<Body> {
                     Response::new(Body::from(b))
                 },
                 Err(e) => {
-                    eprintln!("error: {}", e);
+                    eprintln!("server error: {}", e);
                     build_simple_error(500)
                 },
             }
@@ -82,9 +138,12 @@ fn note(req: &Request<Body>, cap: &Captures) -> Response<Body> {
 struct UrlRouter(Vec<(Regex, fn(&Request<Body>, &Captures) -> Response<Body>)>);
 
 impl UrlRouter {
-    fn new(mut routes: Vec<(&str, fn(&Request<Body>, &Captures) -> Response<Body>)>)
-        -> Self
-    {
+    fn new(
+        mut routes: Vec<(
+            &str,
+            fn(&Request<Body>, &Captures) -> Response<Body>
+        )>,
+    ) -> Self {
         UrlRouter(routes.drain(..).map(
             |(s, f)| (Regex::new(s).unwrap(), f)
         ).collect())
@@ -112,6 +171,6 @@ fn main() {
     };
     let server = Server::bind(&bind_addr)
         .serve(svc)
-        .map_err(|e| { eprintln!("error: {}", e) });
+        .map_err(|e| { eprintln!("server error: {}", e) });
     hyper::rt::run(server);
 }
