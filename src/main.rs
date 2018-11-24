@@ -104,10 +104,12 @@ impl UrlRouter {
 
 fn main() {
     let bind_addr = ([127, 0, 0, 1], 8000).into();
-    let router = UrlRouter::new(vec![
-        ("/note/([0-9]{4}-[0-9]{2}-[0-9]{2})", note),
-    ]);
-    let svc = || { service_fn_ok(|req| router.route(req)) };
+    let svc = || {
+        let router = UrlRouter::new(vec![
+            ("/note/([0-9]{4}-[0-9]{2}-[0-9]{2})", note),
+        ]);
+        service_fn_ok(move |req| router.route(req))
+    };
     let server = Server::bind(&bind_addr)
         .serve(svc)
         .map_err(|e| { eprintln!("error: {}", e) });
