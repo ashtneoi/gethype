@@ -23,8 +23,8 @@
         </p>
     </nav>
     <main>
-        <form autocomplete=off action="" method=post>
-            <textarea id=note-text>{text}</textarea>
+        <form autocomplete=off action="" method=post enctype=multipart/form-data>
+            <textarea id=note-text name=note-text>{text}</textarea>
             <input type=submit>
         </form>
     </main>

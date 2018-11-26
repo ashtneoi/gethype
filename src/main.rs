@@ -6,14 +6,22 @@ extern crate regex;
 
 use chrono::{Local, NaiveDate};
 use curly::render_file_to_string;
-use futures::Future;
-use hyper::{Body, Method, Request, Response, Server, StatusCode};
+use futures::{Future, Stream};
+use hyper::{Body, Chunk, Method, Request, Response, Server, StatusCode};
 use hyper::service::service_fn_ok;
 use regex::{Regex, Captures};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, prelude::*};
 use std::path::Path;
+
+fn consume_prefix<'t>(text: &'t str, prefix: &str) -> Option<&'t str> {
+    if text.starts_with(prefix) {
+        Some(&text[prefix.len()..])
+    } else {
+        None
+    }
+}
 
 fn build_simple_error(status_code: u16) -> Response<Body> {
     let mut ctx = HashMap::new();
@@ -58,20 +66,22 @@ fn today() -> String {
 
 static YMD_FORMAT: &str = "%Y-%m-%d";
 
-fn note(req: &Request<Body>, cap: &Captures) -> Response<Body> {
+fn note(req: Request<Body>, cap: &Captures) -> Response<Body> {
+    let date = match NaiveDate::parse_from_str(
+        cap.get(1).unwrap().as_str(),
+        "%Y-%m-%d",
+    ) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("client error: {}", e);
+            return build_simple_error(400)
+        },
+    };
+    let note_name = format!("data/notes/{}", date.format(YMD_FORMAT));
+
     match req.method() {
         &Method::GET => {
             let mut ctx = HashMap::new();
-            let date = match NaiveDate::parse_from_str(
-                cap.get(1).unwrap().as_str(),
-                "%Y-%m-%d",
-            ) {
-                Ok(d) => d,
-                Err(e) => {
-                    eprintln!("client error: {}", e);
-                    return build_simple_error(400)
-                },
-            };
             ctx.insert("today".to_string(), today());
             ctx.insert(
                 "date".to_string(),
@@ -85,7 +95,6 @@ fn note(req: &Request<Body>, cap: &Captures) -> Response<Body> {
                 "next".to_string(),
                 format!("{}", date.succ().format(YMD_FORMAT)),
             );
-            let note_name = format!("data/notes/{}", date.format(YMD_FORMAT));
             let text = match File::open(&note_name) {
                 Ok(mut f) => {
                     let mut s = String::new();
@@ -129,19 +138,101 @@ fn note(req: &Request<Body>, cap: &Captures) -> Response<Body> {
             }
         },
         &Method::POST => {
+            // FIXME: This is not to spec! Don't use this in production!
+            let headers = req.headers();
+            let boundary = match headers.get("Content-Type") {
+                None => {
+                    eprintln!("client error: missing Content-Type header");
+                    return build_simple_error(400); // TODO
+                },
+                Some(val_bytes) => {
+                    match val_bytes.to_str() {
+                        Err(e) => {
+                            eprintln!(
+                                "client error: \
+                                Content-Type header value isn't ASCII ({})",
+                                e,
+                            );
+                            return build_simple_error(400); // TODO
+                        },
+                        Ok(val) => {
+                            match consume_prefix(
+                                val,
+                                "multipart/form-data; boundary=",
+                            ) {
+                                None => {
+                                    eprintln!(
+                                        "client error: \
+                                        invalid Content-Type header"
+                                    );
+                                    return build_simple_error(400); // TODO
+                                },
+                                Some(b) => {
+                                    let mut b2 = "--".to_string();
+                                    b2.push_str(b);
+                                    b2
+                                },
+                            }
+                        },
+                    }
+                },
+            };
+            println!("boundary: {}", boundary);
+            let mut body_bytes = Vec::new();
+            for chunk in req.into_body().wait() {
+                match chunk {
+                    Err(e) => {
+                        eprintln!(
+                            "error: some kind of body error ({})",
+                            e,
+                        );
+                        return build_simple_error(500); // TODO
+                    },
+                    Ok(c) => {
+                        print!("{}", String::from_utf8_lossy(&c));
+                        body_bytes.extend(c.into_bytes());
+                    },
+                }
+            }
+            //let body = match String::from_utf8(body_bytes) {
+                //Ok(b) => b,
+                //Err(e) => {
+                    //eprintln!(
+                        //"client error: body isn't UTF-8 ({})",
+                        //e,
+                    //);
+                    //return build_simple_error(400); // TODO
+                //},
+            //};
+            //print!("{}", body);
+            //for splat in body.split(&boundary) {
+                //println!("{}", splat);
+            //}
             build_simple_error(500)
+            // FIXME: Again: This is not to spec! Don't use this in production!
+            //let f = match File::create("data/scratch") {
+                //Ok(f) => f,
+                //Err(e) => {
+                    //eprintln!(
+                        //"server error: can't write scratch note file \
+                            //data/scratch ({})",
+                        //e,
+                    //);
+                    //return build_simple_error(500);
+                //},
+            //};
         },
         _ => build_simple_error(500),
     }
 }
 
-struct UrlRouter(Vec<(Regex, fn(&Request<Body>, &Captures) -> Response<Body>)>);
+struct UrlRouter(Vec<(Regex, fn(Request<Body>, &Captures) -> Response<Body>)>);
 
 impl UrlRouter {
     fn new(
         mut routes: Vec<(
             &str,
-            fn(&Request<Body>, &Captures) -> Response<Body>
+            fn(Request<Body>, &Captures) -> Response<Body>
         )>,
     ) -> Self {
         UrlRouter(routes.drain(..).map(
@@ -151,8 +242,9 @@ impl UrlRouter {
 
     fn route(&self, req: Request<Body>) -> Response<Body> {
         for (pat, f) in &self.0 {
-            match pat.captures(req.uri().path()) {
-                Some(c) => return f(&req, &c),
+            let path = req.uri().path().to_string();
+            match pat.captures(&path) {
+                Some(c) => return f(req, &c),
                 None => (),
             }
         }
